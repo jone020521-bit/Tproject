@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jetson Nano 카메라 제어</title>
+<style>
+  body { font-family: sans-serif; margin: 0; background: #f4f5f7; color: #222; }
+  header { background: #76b900; color: #fff; padding: 12px 20px; font-size: 20px; font-weight: bold; }
+  main { display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; }
+  .panel { background: #fff; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.15); }
+  .controls { flex: 0 0 320px; }
+  .view { flex: 1 1 640px; }
+  select, button { font-size: 15px; padding: 8px 12px; margin: 4px 0; }
+  select { width: 100%; }
+  button { border: none; border-radius: 6px; cursor: pointer; color: #fff; background: #555; }
+  button:disabled { opacity: .5; cursor: default; }
+  #btnOn { background: #2e8b57; }
+  #btnOff { background: #c0392b; }
+  .row { display: flex; gap: 8px; }
+  .row button { flex: 1; }
+  #screen { width: 100%; aspect-ratio: 16 / 9; background: #111; display: flex;
+            align-items: center; justify-content: center; color: #888; border-radius: 6px; overflow: hidden; }
+  #screen img { width: 100%; height: 100%; object-fit: contain; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  td { padding: 4px 0; border-bottom: 1px solid #eee; }
+  td:first-child { color: #666; width: 45%; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; color: #fff; font-size: 13px; }
+  .on { background: #2e8b57; } .off { background: #888; } .bad { background: #c0392b; }
+  #msg { min-height: 20px; font-size: 14px; margin-top: 8px; white-space: pre-line; }
+  #msg.error { color: #c0392b; }
+</style>
+</head>
+<body>
+<header>Jetson Nano 카메라 제어</header>
+<main>
+  <section class="panel controls">
+    <h3>카메라</h3>
+    <select id="camSelect"></select>
+    <button id="btnRefresh">장치 다시 찾기</button>
+    <div class="row">
+      <button id="btnOn">ON</button>
+      <button id="btnOff">OFF</button>
+    </div>
+    <button id="btnCheck" style="width:100%">인식 확인</button>
+    <div id="msg"></div>
+
+    <h3>상태</h3>
+    <table>
+      <tr><td>전원</td><td id="stPower"><span class="badge off">OFF</span></td></tr>
+      <tr><td>인식</td><td id="stRecog">-</td></tr>
+      <tr><td>장치</td><td id="stDevice">-</td></tr>
+      <tr><td>해상도</td><td id="stRes">-</td></tr>
+      <tr><td>FPS</td><td id="stFps">-</td></tr>
+      <tr><td>수신 프레임</td><td id="stFrames">-</td></tr>
+      <tr><td>밝기 (0~255)</td><td id="stBright">-</td></tr>
+      <tr><td>동작 시간</td><td id="stUptime">-</td></tr>
+    </table>
+  </section>
+
+  <section class="panel view">
+    <h3>실시간 영상 <a href="/snapshot.jpg" target="_blank" style="font-size:13px">스냅샷</a></h3>
+    <div id="screen"><span id="placeholder">카메라가 꺼져 있습니다</span></div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let streaming = false;
+
+function showMsg(text, isError) {
+  $("msg").textContent = text || "";
+  $("msg").className = isError ? "error" : "";
+}
+
+async function api(path, body) {
+  const opt = body === undefined ? {} : {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)
+  };
+  const res = await fetch(path, opt);
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "요청 실패");
+  return data;
+}
+
+async function loadCameras() {
+  const sel = $("camSelect");
+  const prev = sel.value;
+  try {
+    const data = await api("/api/cameras");
+    sel.innerHTML = "";
+    if (data.cameras.length === 0) {
+      sel.innerHTML = "<option value=''>감지된 카메라 없음</option>";
+      showMsg("감지된 카메라가 없습니다. 연결 상태를 확인하세요.", true);
+      return;
+    }
+    for (const c of data.cameras) {
+      const o = document.createElement("option");
+      o.value = c.device;
+      o.textContent = `${c.device} [${c.type}] ${c.name}`;
+      sel.appendChild(o);
+    }
+    if (prev) sel.value = prev;
+    if (!sel.value) sel.selectedIndex = 0;
+    showMsg(`카메라 ${data.cameras.length}대 감지됨`);
+  } catch (e) { showMsg(e.message, true); }
+}
+
+function setStream(on) {
+  const screen = $("screen");
+  if (on && !streaming) {
+    screen.innerHTML = "";
+    const img = document.createElement("img");
+    img.src = "/stream.mjpg?t=" + Date.now();
+    screen.appendChild(img);
+  } else if (!on && streaming) {
+    screen.innerHTML = "<span>카메라가 꺼져 있습니다</span>";
+  }
+  streaming = on;
+}
+
+function renderStatus(st) {
+  $("stPower").innerHTML = st.running
+    ? "<span class='badge on'>ON</span>" : "<span class='badge off'>OFF</span>";
+  if (st.running) {
+    $("stRecog").innerHTML = st.recognized
+      ? "<span class='badge on'>정상</span>" : "<span class='badge bad'>프레임 없음</span>";
+    $("stDevice").textContent = `${st.camera.device} (${st.camera.type})`;
+    $("stRes").textContent = st.resolution || "-";
+    $("stFps").textContent = st.fps;
+    $("stFrames").textContent = st.frame_count;
+    $("stBright").textContent = st.brightness !== undefined ? st.brightness : "-";
+    $("stUptime").textContent = st.uptime_sec + " 초";
+  } else {
+    for (const id of ["stRecog", "stDevice", "stRes", "stFps", "stFrames", "stBright", "stUptime"])
+      $(id).textContent = "-";
+  }
+  if (st.error && !st.running) showMsg(st.error, true);
+  $("btnOn").disabled = st.running && st.camera && st.camera.device === $("camSelect").value;
+  $("btnOff").disabled = !st.running;
+  setStream(st.running);
+}
+
+async function pollStatus() {
+  try { renderStatus((await api("/api/status")).status); } catch (e) { /* 서버 재시작 중 */ }
+}
+
+$("btnRefresh").onclick = loadCameras;
+
+$("btnOn").onclick = async () => {
+  $("btnOn").disabled = true;
+  showMsg("카메라를 켜는 중...");
+  try {
+    const data = await api("/api/camera/on", {device: $("camSelect").value});
+    showMsg("카메라 ON");
+    renderStatus(data.status);
+  } catch (e) { showMsg(e.message, true); }
+  pollStatus();
+};
+
+$("btnOff").onclick = async () => {
+  try {
+    const data = await api("/api/camera/off", {});
+    showMsg("카메라 OFF");
+    renderStatus(data.status);
+  } catch (e) { showMsg(e.message, true); }
+};
+
+$("btnCheck").onclick = async () => {
+  const device = $("camSelect").value;
+  if (!device) { showMsg("선택된 카메라가 없습니다", true); return; }
+  $("btnCheck").disabled = true;
+  showMsg("인식 확인 중...");
+  try {
+    const r = (await api("/api/check", {device})).result;
+    if (r.frame_ok) {
+      let text = `인식 정상: ${r.device} (${r.type})\n해상도 ${r.resolution}, 밝기 ${r.brightness}`;
+      if (r.warning) text += "\n주의: " + r.warning;
+      showMsg(text, false);
+    } else {
+      showMsg(`인식 실패: ${r.error || "알 수 없는 오류"}`, true);
+    }
+  } catch (e) { showMsg(e.message, true); }
+  $("btnCheck").disabled = false;
+};
+
+loadCameras();
+pollStatus();
+setInterval(pollStatus, 1000);
+</script>
+</body>
+</html>

@@ -1,0 +1,2 @@
+# OpenCV 는 JetPack 에 포함된 버전(GStreamer 지원)을 사용한다. pip 의 opencv-python 은 설치하지 말 것.
+flask
