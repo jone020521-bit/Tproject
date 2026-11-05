@@ -1,0 +1,6 @@
+# Same project as jetson-fan-ctl/ at the top level
+USB-Camera/jetson-fan-ctl/
+
+# Python caches
+__pycache__/
+*.pyc
